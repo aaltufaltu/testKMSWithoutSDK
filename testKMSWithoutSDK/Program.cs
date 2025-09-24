@@ -1,36 +1,41 @@
-﻿using System;
+﻿using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 
-class KmsRequestSigner
+class KmsSigV4Debugger
 {
     private static string accessKey = "<YOUR_ACCESS_KEY>";
     private static string secretKey = "<YOUR_SECRET_KEY>";
     private static string sessionToken = "<YOUR_SESSION_TOKEN>"; // optional
     private static string region = "us-east-1";
+    private static string keyArn = "<YOUR_KEY_ARN>";
 
-    public static void Encrypt()
+    public static void DebugEncryptRequest(string plaintext)
     {
         string service = "kms";
         string host = $"kms.{region}.amazonaws.com";
         string endpoint = $"https://{host}/";
 
-        // JSON body
-        string requestJson = "{\"KeyId\":\"<YOUR_KEY_ARN>\",\"Plaintext\":\"SGVsbG8=\"}";
+        // Body as JSON
+        string base64Text = Convert.ToBase64String(Encoding.UTF8.GetBytes(plaintext));
+        string requestJson = $"{{\"KeyId\":\"{keyArn}\",\"Plaintext\":\"{base64Text}\"}}";
         byte[] requestBytes = Encoding.UTF8.GetBytes(requestJson);
 
-        // Step 1: Dates (always UTC)
+        // Dates
         DateTime utcNow = DateTime.UtcNow;
         string amzDate = utcNow.ToString("yyyyMMddTHHmmssZ");
         string dateStamp = utcNow.ToString("yyyyMMdd");
 
-        Console.WriteLine($"[DEBUG] Local UTC time used for signing: {utcNow:O}");
-
-        // Step 2: Hash body
+        // Body hash
         string contentHash = ToHexString(Sha256(requestBytes));
 
-        // Step 3: Canonical request
+        // Canonical request
+        string signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target";
         string canonicalRequest =
             "POST\n" +
             "/\n\n" +
@@ -39,12 +44,12 @@ class KmsRequestSigner
             $"x-amz-content-sha256:{contentHash}\n" +
             $"x-amz-date:{amzDate}\n" +
             $"x-amz-target:TrentService.Encrypt\n\n" +
-            "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target\n" +
+            $"{signedHeaders}\n" +
             $"{contentHash}";
 
         string canonicalHash = ToHexString(Sha256(Encoding.UTF8.GetBytes(canonicalRequest)));
 
-        // Step 4: String to sign
+        // String to sign
         string credentialScope = $"{dateStamp}/{region}/{service}/aws4_request";
         string stringToSign =
             "AWS4-HMAC-SHA256\n" +
@@ -52,23 +57,26 @@ class KmsRequestSigner
             $"{credentialScope}\n" +
             $"{canonicalHash}";
 
-        // Step 5: Derive signing key + signature
+        // Signature
         byte[] signingKey = GetSignatureKey(secretKey, dateStamp, region, service);
         string signature = ToHexString(HmacSha256(stringToSign, signingKey));
 
+        // Authorization header
         string authorizationHeader =
             $"AWS4-HMAC-SHA256 Credential={accessKey}/{credentialScope}, " +
-            "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, " +
-            $"Signature={signature}";
+            $"SignedHeaders={signedHeaders}, Signature={signature}";
 
-        // Debug prints
-        Console.WriteLine("\n=== DEBUG ===");
-        Console.WriteLine("Canonical Request:\n" + canonicalRequest);
-        Console.WriteLine("\nString To Sign:\n" + stringToSign);
-        Console.WriteLine("\nSignature:\n" + signature);
-        Console.WriteLine("================\n");
+        // === Print debug information ===
+        Console.WriteLine("=== C# Debug Output ===\n");
+        Console.WriteLine("Local UTC time: " + utcNow.ToString("O"));
+        Console.WriteLine("Request JSON: " + requestJson + "\n");
+        Console.WriteLine("Canonical Request:\n" + canonicalRequest + "\n");
+        Console.WriteLine("String to Sign:\n" + stringToSign + "\n");
+        Console.WriteLine("Signature:\n" + signature + "\n");
+        Console.WriteLine("Authorization Header:\n" + authorizationHeader + "\n");
+        Console.WriteLine("====================\n");
 
-        // Step 6: Send request
+        // Optional: Send request to AWS
         using (var client = new HttpClient())
         {
             var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
@@ -82,16 +90,12 @@ class KmsRequestSigner
                 httpRequest.Headers.Add("X-Amz-Security-Token", sessionToken);
 
             var response = client.SendAsync(httpRequest).Result;
-
             Console.WriteLine($"Response: {(int)response.StatusCode} {response.ReasonPhrase}");
             Console.WriteLine(response.Content.ReadAsStringAsync().Result);
 
-            // Print AWS server date
             if (response.Headers.Date.HasValue)
             {
-                Console.WriteLine($"[DEBUG] AWS server time: {response.Headers.Date.Value.UtcDateTime:O}");
-                Console.WriteLine($"[DEBUG] Local vs AWS difference: " +
-                    $"{(utcNow - response.Headers.Date.Value.UtcDateTime).TotalSeconds} seconds");
+                Console.WriteLine($"AWS server UTC time: {response.Headers.Date.Value.UtcDateTime:O}");
             }
         }
     }
@@ -109,13 +113,6 @@ class KmsRequestSigner
             return hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
     }
 
-    private static string ToHexString(byte[] bytes)
-    {
-        var sb = new StringBuilder();
-        foreach (var b in bytes) sb.Append(b.ToString("x2"));
-        return sb.ToString();
-    }
-
     private static byte[] GetSignatureKey(string key, string dateStamp, string regionName, string serviceName)
     {
         byte[] kDate = HmacSha256(dateStamp, Encoding.UTF8.GetBytes("AWS4" + key));
@@ -123,4 +120,27 @@ class KmsRequestSigner
         byte[] kService = HmacSha256(serviceName, kRegion);
         return HmacSha256("aws4_request", kService);
     }
+
+    private static string ToHexString(byte[] bytes)
+    {
+        var sb = new StringBuilder();
+        foreach (var b in bytes) sb.Append(b.ToString("x2"));
+        return sb.ToString();
+    }
 }
+
+
+//echo|set /p="Hello KMS" > C:\Temp\plaintext.txt
+//aws kms encrypt --key-id <YOUR_KEY_ARN> --plaintext fileb://C:\Temp\plaintext.txt --region us-east-1 --debug
+
+
+//# Create a temporary plaintext file
+//$plainTextFile = "C:\Temp\plaintext.txt"
+//Set - Content - Path $plainTextFile - Value "Hello KMS" - NoNewline
+
+//# Run AWS CLI encrypt with debug
+//aws kms encrypt `
+//  --key-id <YOUR_KEY_ARN> `
+//  --plaintext fileb://C:\Temp\plaintext.txt `
+//  --region us - east - 1 `
+//  --debug
