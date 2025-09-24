@@ -3,7 +3,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 
-class KmsCanopyStyle
+class KmsManual
 {
     private static string accessKey = "<YOUR_ACCESS_KEY>";
     private static string secretKey = "<YOUR_SECRET_KEY>";
@@ -11,41 +11,61 @@ class KmsCanopyStyle
     private static string region = "us-east-1";
     private static string keyArn = "<YOUR_KEY_ARN>";
 
+    // ===================== ENCRYPT =====================
     public static void Encrypt(string plaintext)
+    {
+        SendKmsRequest("Encrypt", plaintext);
+    }
+
+    // ===================== DECRYPT =====================
+    public static void Decrypt(string base64Ciphertext)
+    {
+        SendKmsRequest("Decrypt", base64Ciphertext, isPlainText: false);
+    }
+
+    // ===================== CORE REQUEST =====================
+    private static void SendKmsRequest(string action, string data, bool isPlainText = true)
     {
         string service = "kms";
         string host = $"kms.{region}.amazonaws.com";
         string endpoint = $"https://{host}/";
 
         // Body as JSON
-        string base64Text = Convert.ToBase64String(Encoding.UTF8.GetBytes(plaintext));
-        string requestJson = $"{{\"KeyId\":\"{keyArn}\",\"Plaintext\":\"{base64Text}\"}}";
+        string payload = isPlainText
+            ? $"{{\"KeyId\":\"{keyArn}\",\"Plaintext\":\"{Convert.ToBase64String(Encoding.UTF8.GetBytes(data))}\"}}"
+            : $"{{\"CiphertextBlob\":\"{data}\"}}";
+
+        byte[] payloadBytes = Encoding.UTF8.GetBytes(payload);
 
         // Dates
         DateTime utcNow = DateTime.UtcNow;
         string amzDate = utcNow.ToString("yyyyMMddTHHmmssZ");
         string dateStamp = utcNow.ToString("yyyyMMdd");
 
-        // === Canonical request (Canopy style) ===
-        string signedHeaders = "content-type;host;x-amz-date;x-amz-security-token;x-amz-target";
+        // Hash payload
+        string payloadHash = ToHexString(Sha256(payloadBytes));
+
+        // Canonical request
+        string signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-amz-target";
 
         string canonicalHeaders =
             $"content-type:application/x-amz-json-1.1\n" +
             $"host:{host}\n" +
+            $"x-amz-content-sha256:{payloadHash}\n" +
             $"x-amz-date:{amzDate}\n" +
             $"x-amz-security-token:{sessionToken}\n" +
-            $"x-amz-target:TrentService.Encrypt\n";
+            $"x-amz-target:TrentService.{action}\n";
 
         string canonicalRequest =
             "POST\n" +
             "/\n\n" +
             canonicalHeaders + "\n" +
             signedHeaders + "\n" +
-            ToHexString(Sha256(Encoding.UTF8.GetBytes(requestJson))); // hash of payload
+            payloadHash;
 
         string canonicalHash = ToHexString(Sha256(Encoding.UTF8.GetBytes(canonicalRequest)));
 
-        // === String to sign ===
+        // String to sign
         string credentialScope = $"{dateStamp}/{region}/{service}/aws4_request";
         string stringToSign =
             "AWS4-HMAC-SHA256\n" +
@@ -53,7 +73,7 @@ class KmsCanopyStyle
             $"{credentialScope}\n" +
             canonicalHash;
 
-        // === Signature ===
+        // Signature
         byte[] signingKey = GetSignatureKey(secretKey, dateStamp, region, service);
         string signature = ToHexString(HmacSha256(stringToSign, signingKey));
 
@@ -61,22 +81,23 @@ class KmsCanopyStyle
             $"AWS4-HMAC-SHA256 Credential={accessKey}/{credentialScope}, " +
             $"SignedHeaders={signedHeaders}, Signature={signature}";
 
-        // === Debug output ===
+        // Debug output
         Console.WriteLine("=== DEBUG ===");
         Console.WriteLine("Canonical Request:\n" + canonicalRequest);
         Console.WriteLine("\nString to Sign:\n" + stringToSign);
         Console.WriteLine("\nAuthorization Header:\n" + authorizationHeader);
         Console.WriteLine("================\n");
 
-        // === Send request ===
+        // Send request
         using (var client = new HttpClient())
         {
             var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
-            httpRequest.Content = new StringContent(requestJson, Encoding.UTF8, "application/x-amz-json-1.1");
+            httpRequest.Content = new StringContent(payload, Encoding.UTF8, "application/x-amz-json-1.1");
 
             httpRequest.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
             httpRequest.Headers.Add("X-Amz-Date", amzDate);
-            httpRequest.Headers.Add("X-Amz-Target", "TrentService.Encrypt");
+            httpRequest.Headers.Add("X-Amz-Target", $"TrentService.{action}");
+            httpRequest.Headers.Add("X-Amz-Content-Sha256", payloadHash);
             httpRequest.Headers.Add("X-Amz-Security-Token", sessionToken);
 
             var response = client.SendAsync(httpRequest).Result;
@@ -88,7 +109,7 @@ class KmsCanopyStyle
         }
     }
 
-    // === Helpers ===
+    // ===================== HELPERS =====================
     private static byte[] Sha256(byte[] data)
     {
         using (var sha256 = SHA256.Create())
