@@ -3,28 +3,34 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 
-class KmsManual
+class KmsDebugTool
 {
     private static string accessKey = "<YOUR_ACCESS_KEY>";
     private static string secretKey = "<YOUR_SECRET_KEY>";
-    private static string sessionToken = "<YOUR_SESSION_TOKEN>"; // required for temp creds
+    private static string sessionToken = "<YOUR_SESSION_TOKEN>"; // temporary credentials
     private static string region = "us-east-1";
     private static string keyArn = "<YOUR_KEY_ARN>";
 
-    // ===================== ENCRYPT =====================
-    public static void Encrypt(string plaintext)
+    static void Main()
     {
-        SendKmsRequest("Encrypt", plaintext);
+        Console.WriteLine("=== AWS KMS Manual Encrypt Debug Tool ===");
+        Console.Write("Enter plaintext to encrypt: ");
+        string plaintext = Console.ReadLine();
+
+        Encrypt(plaintext);
     }
 
-    // ===================== DECRYPT =====================
+    public static void Encrypt(string plaintext)
+    {
+        SendKmsRequest("Encrypt", plaintext, isPlainText: true);
+    }
+
     public static void Decrypt(string base64Ciphertext)
     {
         SendKmsRequest("Decrypt", base64Ciphertext, isPlainText: false);
     }
 
-    // ===================== CORE REQUEST =====================
-    private static void SendKmsRequest(string action, string data, bool isPlainText = true)
+    private static void SendKmsRequest(string action, string data, bool isPlainText)
     {
         string service = "kms";
         string host = $"kms.{region}.amazonaws.com";
@@ -42,12 +48,11 @@ class KmsManual
         string amzDate = utcNow.ToString("yyyyMMddTHHmmssZ");
         string dateStamp = utcNow.ToString("yyyyMMdd");
 
-        // Hash payload
+        // Payload hash
         string payloadHash = ToHexString(Sha256(payloadBytes));
 
-        // Canonical request
+        // Canonical headers
         string signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-amz-target";
-
         string canonicalHeaders =
             $"content-type:application/x-amz-json-1.1\n" +
             $"host:{host}\n" +
@@ -56,37 +61,29 @@ class KmsManual
             $"x-amz-security-token:{sessionToken}\n" +
             $"x-amz-target:TrentService.{action}\n";
 
-        string canonicalRequest =
-            "POST\n" +
-            "/\n\n" +
-            canonicalHeaders + "\n" +
-            signedHeaders + "\n" +
-            payloadHash;
-
+        // Canonical request
+        string canonicalRequest = $"POST\n/\n\n{canonicalHeaders}\n{signedHeaders}\n{payloadHash}";
         string canonicalHash = ToHexString(Sha256(Encoding.UTF8.GetBytes(canonicalRequest)));
 
         // String to sign
         string credentialScope = $"{dateStamp}/{region}/{service}/aws4_request";
-        string stringToSign =
-            "AWS4-HMAC-SHA256\n" +
-            $"{amzDate}\n" +
-            $"{credentialScope}\n" +
-            canonicalHash;
+        string stringToSign = $"AWS4-HMAC-SHA256\n{amzDate}\n{credentialScope}\n{canonicalHash}";
 
         // Signature
         byte[] signingKey = GetSignatureKey(secretKey, dateStamp, region, service);
         string signature = ToHexString(HmacSha256(stringToSign, signingKey));
 
         string authorizationHeader =
-            $"AWS4-HMAC-SHA256 Credential={accessKey}/{credentialScope}, " +
-            $"SignedHeaders={signedHeaders}, Signature={signature}";
+            $"AWS4-HMAC-SHA256 Credential={accessKey}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
 
-        // Debug output
-        Console.WriteLine("=== DEBUG ===");
-        Console.WriteLine("Canonical Request:\n" + canonicalRequest);
+        // === Debug Output ===
+        Console.WriteLine("\n=== DEBUG OUTPUT ===");
+        Console.WriteLine("Payload:\n" + payload);
+        Console.WriteLine("\nPayload SHA256 Hash:\n" + payloadHash);
+        Console.WriteLine("\nCanonical Request:\n" + canonicalRequest);
         Console.WriteLine("\nString to Sign:\n" + stringToSign);
         Console.WriteLine("\nAuthorization Header:\n" + authorizationHeader);
-        Console.WriteLine("================\n");
+        Console.WriteLine("===================\n");
 
         // Send request
         using (var client = new HttpClient())
