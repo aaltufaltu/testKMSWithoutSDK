@@ -3,17 +3,17 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 
-class KmsDebugTool
+class KmsUnsignedPayload
 {
     private static string accessKey = "<YOUR_ACCESS_KEY>";
     private static string secretKey = "<YOUR_SECRET_KEY>";
-    private static string sessionToken = "<YOUR_SESSION_TOKEN>"; // temporary credentials
+    private static string sessionToken = "<YOUR_SESSION_TOKEN>";
     private static string region = "us-east-1";
     private static string keyArn = "<YOUR_KEY_ARN>";
 
     static void Main()
     {
-        Console.WriteLine("=== AWS KMS Manual Encrypt Debug Tool ===");
+        Console.WriteLine("=== AWS KMS Manual Encrypt (UNSIGNED-PAYLOAD) ===");
         Console.Write("Enter plaintext to encrypt: ");
         string plaintext = Console.ReadLine();
 
@@ -36,7 +36,7 @@ class KmsDebugTool
         string host = $"kms.{region}.amazonaws.com";
         string endpoint = $"https://{host}/";
 
-        // Body as JSON
+        // Actual JSON payload to send
         string payload = isPlainText
             ? $"{{\"KeyId\":\"{keyArn}\",\"Plaintext\":\"{Convert.ToBase64String(Encoding.UTF8.GetBytes(data))}\"}}"
             : $"{{\"CiphertextBlob\":\"{data}\"}}";
@@ -48,26 +48,32 @@ class KmsDebugTool
         string amzDate = utcNow.ToString("yyyyMMddTHHmmssZ");
         string dateStamp = utcNow.ToString("yyyyMMdd");
 
-        // Payload hash
-        string payloadHash = ToHexString(Sha256(payloadBytes));
+        // Canonical request in UNSIGNED-PAYLOAD mode
+        string signedHeaders = "content-type;host;x-amz-date;x-amz-security-token;x-amz-target";
 
-        // Canonical headers
-        string signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token;x-amz-target";
         string canonicalHeaders =
             $"content-type:application/x-amz-json-1.1\n" +
             $"host:{host}\n" +
-            $"x-amz-content-sha256:{payloadHash}\n" +
             $"x-amz-date:{amzDate}\n" +
             $"x-amz-security-token:{sessionToken}\n" +
             $"x-amz-target:TrentService.{action}\n";
 
-        // Canonical request
-        string canonicalRequest = $"POST\n/\n\n{canonicalHeaders}\n{signedHeaders}\n{payloadHash}";
+        string canonicalRequest =
+            "POST\n" +
+            "/\n\n" +
+            canonicalHeaders + "\n" +
+            signedHeaders + "\n" +
+            "UNSIGNED-PAYLOAD";
+
         string canonicalHash = ToHexString(Sha256(Encoding.UTF8.GetBytes(canonicalRequest)));
 
         // String to sign
         string credentialScope = $"{dateStamp}/{region}/{service}/aws4_request";
-        string stringToSign = $"AWS4-HMAC-SHA256\n{amzDate}\n{credentialScope}\n{canonicalHash}";
+        string stringToSign =
+            "AWS4-HMAC-SHA256\n" +
+            $"{amzDate}\n" +
+            $"{credentialScope}\n" +
+            canonicalHash;
 
         // Signature
         byte[] signingKey = GetSignatureKey(secretKey, dateStamp, region, service);
@@ -76,10 +82,9 @@ class KmsDebugTool
         string authorizationHeader =
             $"AWS4-HMAC-SHA256 Credential={accessKey}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
 
-        // === Debug Output ===
-        Console.WriteLine("\n=== DEBUG OUTPUT ===");
+        // Debug output
+        Console.WriteLine("\n=== DEBUG ===");
         Console.WriteLine("Payload:\n" + payload);
-        Console.WriteLine("\nPayload SHA256 Hash:\n" + payloadHash);
         Console.WriteLine("\nCanonical Request:\n" + canonicalRequest);
         Console.WriteLine("\nString to Sign:\n" + stringToSign);
         Console.WriteLine("\nAuthorization Header:\n" + authorizationHeader);
@@ -94,15 +99,12 @@ class KmsDebugTool
             httpRequest.Headers.TryAddWithoutValidation("Authorization", authorizationHeader);
             httpRequest.Headers.Add("X-Amz-Date", amzDate);
             httpRequest.Headers.Add("X-Amz-Target", $"TrentService.{action}");
-            httpRequest.Headers.Add("X-Amz-Content-Sha256", payloadHash);
             httpRequest.Headers.Add("X-Amz-Security-Token", sessionToken);
+            httpRequest.Headers.Add("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD");
 
             var response = client.SendAsync(httpRequest).Result;
             Console.WriteLine($"Response: {(int)response.StatusCode} {response.ReasonPhrase}");
             Console.WriteLine(response.Content.ReadAsStringAsync().Result);
-
-            if (response.Headers.Date.HasValue)
-                Console.WriteLine($"AWS server UTC time: {response.Headers.Date.Value.UtcDateTime:O}");
         }
     }
 
